@@ -2,80 +2,79 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"time"
 
 	"github.com/user/retryctl/internal/backoff"
+	"github.com/user/retryctl/internal/config"
+	"github.com/user/retryctl/internal/logger"
+	"github.com/user/retryctl/internal/metrics"
 )
-
-// Result holds the outcome of a single command attempt.
-type Result struct {
-	Attempt  int
-	ExitCode int
-	Duration time.Duration
-	Err      error
-}
-
-// Config configures retry behaviour for a command run.
-type Config struct {
-	MaxAttempts int
-	Strategy    backoff.Strategy
-}
 
 // Runner executes a command with retry logic.
 type Runner struct {
-	cfg Config
+	cfg      *config.Config
+	log      *logger.Logger
+	strategy backoff.Strategy
+	metrics  *metrics.Summary
 }
 
-// New creates a Runner with the given Config.
-func New(cfg Config) *Runner {
-	if cfg.MaxAttempts <= 0 {
-		cfg.MaxAttempts = 1
+// New creates a Runner from the provided config and logger.
+func New(cfg *config.Config, log *logger.Logger, strategy backoff.Strategy) *Runner {
+	return &Runner{
+		cfg:      cfg,
+		log:      log,
+		strategy: strategy,
+		metrics:  metrics.New(),
 	}
-	return &Runner{cfg: cfg}
 }
 
-// Run executes the command up to MaxAttempts times, applying backoff between
-// failures. It returns all attempt results and the last error (nil on success).
-func (r *Runner) Run(ctx context.Context, name string, args ...string) ([]Result, error) {
-	var results []Result
+// Metrics returns the accumulated run summary.
+func (r *Runner) Metrics() *metrics.Summary {
+	return r.metrics
+}
+
+// Run executes the configured command, retrying on failure.
+func (r *Runner) Run(ctx context.Context) error {
+	var lastErr error
 
 	for attempt := 1; attempt <= r.cfg.MaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		r.log.Info("attempt", map[string]any{
+			"attempt": attempt,
+			"max":     r.cfg.MaxAttempts,
+			"command": r.cfg.Command,
+		})
+
 		start := time.Now()
-		cmd := exec.CommandContext(ctx, name, args...)
+		//nolint:gosec
+		cmd := exec.CommandContext(ctx, r.cfg.Command, r.cfg.Args...)
 		err := cmd.Run()
-		duration := time.Since(start)
-
-		exitCode := 0
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
-			} else {
-				exitCode = -1
-			}
-		}
-
-		res := Result{
-			Attempt:  attempt,
-			ExitCode: exitCode,
-			Duration: duration,
-			Err:      err,
-		}
-		results = append(results, res)
+		elapsed := time.Since(start)
+		r.metrics.RecordAttempt(elapsed, err)
 
 		if err == nil {
-			return results, nil
+			r.log.Info("success", map[string]any{"attempt": attempt, "elapsed": elapsed.String()})
+			return nil
 		}
 
+		lastErr = err
+		r.log.Warn("attempt failed", map[string]any{"attempt": attempt, "error": err.Error()})
+
 		if attempt < r.cfg.MaxAttempts {
-			wait := r.cfg.Strategy.Next(attempt)
+			delay := r.strategy.Next(attempt)
+			r.log.Info("backing off", map[string]any{"delay": delay.String()})
 			select {
+			case <-time.After(delay):
 			case <-ctx.Done():
-				return results, ctx.Err()
-			case <-time.After(wait):
+				return ctx.Err()
 			}
 		}
 	}
 
-	return results, results[len(results)-1].Err
+	return fmt.Errorf("all %d attempts failed: %w", r.cfg.MaxAttempts, lastErr)
 }

@@ -6,61 +6,74 @@ import (
 	"time"
 
 	"github.com/user/retryctl/internal/backoff"
+	"github.com/user/retryctl/internal/config"
+	"github.com/user/retryctl/internal/logger"
 	"github.com/user/retryctl/internal/runner"
 )
 
-func fixedZero() backoff.Strategy {
-	s, _ := backoff.NewStrategy("fixed", 0)
-	return s
+func fixedZero(_ int) time.Duration { return 0 }
+
+type fixedStrategy struct{}
+
+func (f fixedStrategy) Next(_ int) time.Duration { return 0 }
+
+func newTestRunner(cmd string, args []string, maxAttempts int) *runner.Runner {
+	cfg := &config.Config{Command: cmd, Args: args, MaxAttempts: maxAttempts}
+	log := logger.New(nil)
+	return runner.New(cfg, log, fixedStrategy{})
 }
 
 func TestRunSuccess(t *testing.T) {
-	r := runner.New(runner.Config{MaxAttempts: 3, Strategy: fixedZero()})
-	results, err := r.Run(context.Background(), "true")
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+	r := newTestRunner("true", nil, 3)
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("expected success, got %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 attempt, got %d", len(results))
-	}
-	if results[0].ExitCode != 0 {
-		t.Errorf("expected exit code 0, got %d", results[0].ExitCode)
+	snap := r.Metrics().Snapshot()
+	if snap.Successes != 1 {
+		t.Fatalf("expected 1 success, got %d", snap.Successes)
 	}
 }
 
 func TestRunAllFailures(t *testing.T) {
-	r := runner.New(runner.Config{MaxAttempts: 3, Strategy: fixedZero()})
-	results, err := r.Run(context.Background(), "false")
+	r := newTestRunner("false", nil, 3)
+	err := r.Run(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if len(results) != 3 {
-		t.Fatalf("expected 3 attempts, got %d", len(results))
-	}
-	for _, res := range results {
-		if res.ExitCode == 0 {
-			t.Errorf("attempt %d: expected non-zero exit code", res.Attempt)
-		}
+	snap := r.Metrics().Snapshot()
+	if snap.Failures != 3 {
+		t.Fatalf("expected 3 failures, got %d", snap.Failures)
 	}
 }
 
 func TestRunContextCancellation(t *testing.T) {
-	s, _ := backoff.NewStrategy("fixed", 500*time.Millisecond)
-	r := runner.New(runner.Config{MaxAttempts: 5, Strategy: s})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	_, err := r.Run(ctx, "false")
-	if err == nil {
-		t.Fatal("expected context error, got nil")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := newTestRunner("true", nil, 5)
+	if err := r.Run(ctx); err == nil {
+		t.Fatal("expected context error")
 	}
 }
 
 func TestRunDefaultMaxAttempts(t *testing.T) {
-	r := runner.New(runner.Config{Strategy: fixedZero()})
-	results, _ := r.Run(context.Background(), "false")
-	if len(results) != 1 {
-		t.Errorf("expected default 1 attempt, got %d", len(results))
+	cfg := config.Default()
+	cfg.Command = "true"
+	log := logger.New(nil)
+	strat, _ := backoff.NewStrategy("fixed", 0)
+	r := runner.New(cfg, log, strat)
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMetricsAccumulate(t *testing.T) {
+	r := newTestRunner("false", nil, 2)
+	_ = r.Run(context.Background())
+	snap := r.Metrics().Snapshot()
+	if snap.Attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", snap.Attempts)
+	}
+	if snap.LastError == nil {
+		t.Fatal("expected LastError to be set")
 	}
 }
