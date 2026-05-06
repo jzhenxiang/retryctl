@@ -1,6 +1,7 @@
 package backoff_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -77,4 +78,28 @@ func TestNewStrategy(t *testing.T) {
 			t.Errorf("NewStrategy(%q) returned nil", tc.name)
 		}
 	}
+}
+
+func TestExponentialStrategyNeverExceedsMaxDelay(t *testing.T) {
+	maxDelay := 5 * time.Second
+	s := &backoff.ExponentialStrategy{
+		InitialDelay: time.Second,
+		Multiplier:   3.0,
+		MaxDelay:     maxDelay,
+	}
+
+	for attempt := 0; attempt < 20; attempt++ {
+		if got := s.Next(attempt); got > maxDelay {
+			t.Errorf("attempt %d: delay %v exceeded MaxDelay %v", attempt, got, maxDelay)
+		}
+	}
+}
+
+func ExampleFixedStrategy() {
+	s := &backoff.FixedStrategy{Delay: 500 * time.Millisecond}
+	fmt.Println(s.Next(0))
+	fmt.Println(s.Next(5))
+	// Output:
+	// 500ms
+	// 500ms
 }
