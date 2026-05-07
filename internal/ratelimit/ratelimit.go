@@ -88,3 +88,12 @@ func (l *Limiter) Remaining() int {
 	}
 	return remaining
 }
+
+// Reset clears all recorded attempts, effectively resetting the limiter
+// as if no attempts have been made. This is useful in tests or when a
+// logical boundary (e.g. a new job run) should start with a fresh window.
+func (l *Limiter) Reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.buckets = l.buckets[:0]
+}
