@@ -1,70 +1,64 @@
+// Package backoff provides retry delay strategies.
 package backoff
 
 import (
-	"math"
+	"fmt"
 	"time"
 )
 
-// Strategy defines the interface for backoff strategies.
+// Strategy computes the delay before the next retry attempt.
+// attempt is 1-based (first retry is attempt 1).
 type Strategy interface {
-	Next(attempt int) time.Duration
+	Delay(attempt int) time.Duration
 }
 
-// FixedStrategy waits a constant duration between retries.
-type FixedStrategy struct {
-	Delay time.Duration
+// Fixed returns the same delay for every attempt.
+type Fixed struct {
+	Delay_ time.Duration
 }
 
-func (f *FixedStrategy) Next(_ int) time.Duration {
-	return f.Delay
+func (f Fixed) Delay(_ int) time.Duration { return f.Delay_ }
+
+// Linear increases the delay linearly: attempt * base.
+type Linear struct {
+	Base time.Duration
 }
 
-// ExponentialStrategy implements exponential backoff with optional jitter.
-type ExponentialStrategy struct {
-	InitialDelay time.Duration
-	Multiplier   float64
-	MaxDelay     time.Duration
+func (l Linear) Delay(attempt int) time.Duration {
+	return time.Duration(attempt) * l.Base
 }
 
-func (e *ExponentialStrategy) Next(attempt int) time.Duration {
-	delay := float64(e.InitialDelay) * math.Pow(e.Multiplier, float64(attempt))
-	if e.MaxDelay > 0 && time.Duration(delay) > e.MaxDelay {
+// Exponential doubles the delay each attempt, capped at MaxDelay.
+type Exponential struct {
+	Base     time.Duration
+	MaxDelay time.Duration
+}
+
+func (e Exponential) Delay(attempt int) time.Duration {
+	d := e.Base
+	for i := 1; i < attempt; i++ {
+		d *= 2
+		if e.MaxDelay > 0 && d > e.MaxDelay {
+			return e.MaxDelay
+		}
+	}
+	if e.MaxDelay > 0 && d > e.MaxDelay {
 		return e.MaxDelay
 	}
-	return time.Duration(delay)
+	return d
 }
 
-// LinearStrategy increases delay linearly with each attempt.
-type LinearStrategy struct {
-	InitialDelay time.Duration
-	Increment    time.Duration
-	MaxDelay     time.Duration
-}
-
-func (l *LinearStrategy) Next(attempt int) time.Duration {
-	delay := l.InitialDelay + time.Duration(attempt)*l.Increment
-	if l.MaxDelay > 0 && delay > l.MaxDelay {
-		return l.MaxDelay
-	}
-	return delay
-}
-
-// NewStrategy constructs a Strategy by name with the given base delay.
-func NewStrategy(name string, initial, max time.Duration) Strategy {
+// NewStrategy constructs a Strategy from a name string and base delay.
+// Supported names: "fixed", "linear", "exponential".
+func NewStrategy(name string, base, maxDelay time.Duration) (Strategy, error) {
 	switch name {
-	case "exponential":
-		return &ExponentialStrategy{
-			InitialDelay: initial,
-			Multiplier:   2.0,
-			MaxDelay:     max,
-		}
+	case "fixed":
+		return Fixed{Delay_: base}, nil
 	case "linear":
-		return &LinearStrategy{
-			InitialDelay: initial,
-			Increment:    initial,
-			MaxDelay:     max,
-		}
-	default: // "fixed"
-		return &FixedStrategy{Delay: initial}
+		return Linear{Base: base}, nil
+	case "exponential":
+		return Exponential{Base: base, MaxDelay: maxDelay}, nil
+	default:
+		return nil, fmt.Errorf("backoff: unknown strategy %q", name)
 	}
 }
