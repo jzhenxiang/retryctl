@@ -89,3 +89,22 @@ func TestAvailableNeverExceedsCapacity(t *testing.T) {
 		t.Fatalf("available %d exceeds capacity %d", got, cap)
 	}
 }
+
+// TestAcquireMultipleConsumesAll verifies that acquiring all tokens from a
+// limiter with capacity > 1 correctly drains the pool to zero.
+func TestAcquireMultipleConsumesAll(t *testing.T) {
+	const capacity = 3
+	l, _ := backpressure.New(capacity, time.Hour) // refill never fires in test
+	defer l.Stop()
+
+	ctx := context.Background()
+	for i := 0; i < capacity; i++ {
+		if err := l.Acquire(ctx); err != nil {
+			t.Fatalf("acquire %d/%d failed: %v", i+1, capacity, err)
+		}
+	}
+
+	if got := l.Available(); got != 0 {
+		t.Fatalf("expected 0 tokens after draining, got %d", got)
+	}
+}
