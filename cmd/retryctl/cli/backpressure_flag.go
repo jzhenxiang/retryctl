@@ -30,6 +30,9 @@ func buildBackpressure(cmd *cobra.Command) (*backpressure.Limiter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bp-refill: %w", err)
 	}
+	if refill <= 0 {
+		return nil, fmt.Errorf("bp-refill: must be a positive duration, got %s", refill)
+	}
 
 	l, err := backpressure.New(capacity, refill)
 	if err != nil {
