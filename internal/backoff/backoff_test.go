@@ -86,3 +86,14 @@ func TestExponentialStrategyAttemptOne(t *testing.T) {
 		t.Errorf("got %v, want 500ms", got)
 	}
 }
+
+func TestExponentialStrategyCapEqualsBase(t *testing.T) {
+	// When MaxDelay equals Base, every attempt should return Base.
+	base := 3 * time.Second
+	s := backoff.Exponential{Base: base, MaxDelay: base}
+	for attempt := 1; attempt <= 10; attempt++ {
+		if got := s.Delay(attempt); got != base {
+			t.Errorf("attempt %d: got %v, want %v", attempt, got, base)
+		}
+	}
+}
